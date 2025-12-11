@@ -1,0 +1,55 @@
+name: Full Docker Cleanup
+description: Cleanup old Docker images, volumes and networks on VPS
+
+inputs:
+  ssh_host:
+    description: SSH host address
+    required: true
+  ssh_user:
+    description: SSH username
+    required: true
+  ssh_key:
+    description: SSH private key
+    required: true
+  ssh_port:
+    description: SSH port
+    required: false
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    - name: Full Docker cleanup
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.ssh_host }}
+        username: ${{ inputs.ssh_user }}
+        key: ${{ inputs.ssh_key }}
+        port: ${{ inputs.ssh_port }}
+        timeout: 5m
+        script: |
+          echo '🧹 Starting cleanup...'
+          echo ''
+
+          echo '📦 Current images:'
+          sudo docker images
+          echo ''
+
+          echo '🗑️  Removing unused images older than 30 days...'
+          sudo docker image prune -a --filter "until=720h" --force
+          echo ''
+
+          echo '🗑️  Removing unused volumes...'
+          sudo docker volume prune --force
+          echo ''
+
+          echo '🗑️  Removing unused networks...'
+          sudo docker network prune --force
+          echo ''
+
+          echo '📊 Final state:'
+          sudo docker images
+          sudo docker ps -a
+          echo ''
+
+          echo '✅ Cleanup completed!'

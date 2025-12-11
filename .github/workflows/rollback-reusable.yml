@@ -1,0 +1,81 @@
+name: Rollback Service (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      deploy_path:
+        description: Deployment path on VPS
+        required: true
+        type: string
+      commit_sha:
+        description: Commit SHA of failed deployment
+        required: true
+        type: string
+      wait_time:
+        description: Time to wait after starting services (seconds)
+        required: false
+        type: string
+        default: '20'
+    secrets:
+      ssh_host:
+        required: true
+      ssh_user:
+        required: true
+      ssh_key:
+        required: true
+      ssh_port:
+        required: false
+      env_content:
+        required: true
+      grafana_api_key:
+        required: false
+
+jobs:
+  rollback:
+    name: Rollback
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────────────────────
+      # Откат к предыдущей версии
+      # ─────────────────────────────────────────────────────────────
+      - name: Rollback to previous version
+        id: rollback
+        uses: proflyder/infra-ci/.github/actions/rollback-service@master
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_key: ${{ secrets.ssh_key }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+          deploy_path: ${{ inputs.deploy_path }}
+          env_content: ${{ secrets.env_content }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_actor: ${{ github.actor }}
+          wait_time: ${{ inputs.wait_time }}
+
+      # ─────────────────────────────────────────────────────────────
+      # Smoke tests после rollback
+      # ─────────────────────────────────────────────────────────────
+      - name: Verify rollback with smoke tests
+        if: steps.rollback.outcome == 'success'
+        uses: ./.github/actions/smoke-tests
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_key: ${{ secrets.ssh_key }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+
+      # ─────────────────────────────────────────────────────────────
+      # Grafana аннотация о rollback
+      # ─────────────────────────────────────────────────────────────
+      - name: Send rollback annotation to Grafana
+        continue-on-error: true
+        uses: proflyder/infra-ci/.github/actions/grafana-annotation@master
+        with:
+          grafana_api_key: ${{ secrets.grafana_api_key }}
+          annotation_type: rollback
+          commit_sha: ${{ inputs.commit_sha }}
+          actor: ${{ github.actor }}

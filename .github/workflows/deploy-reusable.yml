@@ -1,0 +1,151 @@
+name: Deploy Service (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      deploy_path:
+        description: Deployment path on VPS (e.g., /app/currency-bot or /opt/monitoring)
+        required: true
+        type: string
+      docker_image:
+        description: Docker image to deploy
+        required: true
+        type: string
+      cleanup_image_pattern:
+        description: Pattern to match images for cleanup
+        required: true
+        type: string
+      commit_sha:
+        description: Commit SHA
+        required: true
+        type: string
+      commit_message:
+        description: Commit message
+        required: true
+        type: string
+      wait_time:
+        description: Time to wait after starting services (seconds)
+        required: false
+        type: string
+        default: '20'
+    secrets:
+      ssh_host:
+        required: true
+      ssh_user:
+        required: true
+      ssh_key:
+        required: true
+      ssh_port:
+        required: false
+      env_content:
+        required: true
+      grafana_api_key:
+        required: false
+    outputs:
+      deploy_outcome:
+        description: Outcome of the deploy step
+        value: ${{ jobs.deploy.outputs.deploy_outcome }}
+      smoke_tests_outcome:
+        description: Outcome of the smoke tests
+        value: ${{ jobs.deploy.outputs.smoke_tests_outcome }}
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_outcome: ${{ steps.deploy.outcome }}
+      smoke_tests_outcome: ${{ steps.smoke_tests.outcome }}
+
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────────────────────
+      # Backup текущей версии
+      # ─────────────────────────────────────────────────────────────
+      - name: Save current version for rollback
+        uses: proflyder/infra-ci/.github/actions/backup-version@master
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_key: ${{ secrets.ssh_key }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+          version_file: ${{ inputs.deploy_path }}/DEPLOYED_VERSION
+
+      # ─────────────────────────────────────────────────────────────
+      # Деплой сервиса
+      # ─────────────────────────────────────────────────────────────
+      - name: Deploy service
+        id: deploy
+        continue-on-error: true
+        uses: proflyder/infra-ci/.github/actions/deploy-service@master
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_key: ${{ secrets.ssh_key }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+          deploy_path: ${{ inputs.deploy_path }}
+          docker_image: ${{ inputs.docker_image }}
+          env_content: ${{ secrets.env_content }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_actor: ${{ github.actor }}
+          commit_sha: ${{ inputs.commit_sha }}
+          commit_message: ${{ inputs.commit_message }}
+          wait_time: ${{ inputs.wait_time }}
+
+      # ─────────────────────────────────────────────────────────────
+      # Smoke tests
+      # ─────────────────────────────────────────────────────────────
+      - name: Smoke tests
+        id: smoke_tests
+        if: steps.deploy.outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/smoke-tests
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_key: ${{ secrets.ssh_key }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+
+      # ─────────────────────────────────────────────────────────────
+      # Проверка статуса
+      # ─────────────────────────────────────────────────────────────
+      - name: Check deployment status
+        if: always()
+        run: |
+          if [[ "${{ steps.deploy.outcome }}" == "failure" ]] || [[ "${{ steps.smoke_tests.outcome }}" == "failure" ]]; then
+            echo "❌ Deployment failed"
+            exit 1
+          else
+            echo "✅ Deployment successful"
+          fi
+
+      # ─────────────────────────────────────────────────────────────
+      # Grafana аннотация
+      # ─────────────────────────────────────────────────────────────
+      - name: Send deployment annotation to Grafana
+        if: steps.deploy.outcome == 'success' && steps.smoke_tests.outcome == 'success'
+        continue-on-error: true
+        uses: proflyder/infra-ci/.github/actions/grafana-annotation@master
+        with:
+          grafana_api_key: ${{ secrets.grafana_api_key }}
+          annotation_type: success
+          commit_sha: ${{ inputs.commit_sha }}
+          commit_message: ${{ inputs.commit_message }}
+          actor: ${{ github.actor }}
+
+      # ─────────────────────────────────────────────────────────────
+      # Cleanup старых образов
+      # ─────────────────────────────────────────────────────────────
+      - name: Cleanup old Docker images
+        if: steps.deploy.outcome == 'success' && steps.smoke_tests.outcome == 'success'
+        continue-on-error: true
+        uses: proflyder/infra-ci/.github/actions/cleanup-images@master
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_key: ${{ secrets.ssh_key }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+          version_file: ${{ inputs.deploy_path }}/DEPLOYED_VERSION
+          image_pattern: ${{ inputs.cleanup_image_pattern }}

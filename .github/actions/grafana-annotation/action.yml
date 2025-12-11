@@ -1,0 +1,52 @@
+name: Send Grafana Annotation
+description: Send deployment annotation to Grafana dashboard
+
+inputs:
+  grafana_api_key:
+    description: Grafana API key for authentication
+    required: true
+  grafana_url:
+    description: Grafana URL
+    required: false
+    default: 'https://proflyder.dev/grafana'
+  annotation_type:
+    description: Type of annotation (success or rollback)
+    required: true
+  commit_sha:
+    description: Git commit SHA
+    required: true
+  commit_message:
+    description: Git commit message
+    required: false
+    default: ''
+  actor:
+    description: GitHub actor
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Send annotation to Grafana
+      shell: bash
+      run: |
+        if [ "${{ inputs.annotation_type }}" == "success" ]; then
+          TEXT="✅ Deployment successful\nCommit: ${{ inputs.commit_sha }}\nBy: ${{ inputs.actor }}\nMessage: ${{ inputs.commit_message }}"
+          TAGS='["deployment", "github-actions", "production", "success"]'
+        elif [ "${{ inputs.annotation_type }}" == "rollback" ]; then
+          TEXT="⚠️ Deployment failed - Rollback executed\nCommit: ${{ inputs.commit_sha }}\nBy: ${{ inputs.actor }}\nReason: Smoke tests failed or deployment error"
+          TAGS='["deployment", "github-actions", "rollback", "failure"]'
+        else
+          echo "❌ Unknown annotation type: ${{ inputs.annotation_type }}"
+          exit 1
+        fi
+
+        curl -X POST ${{ inputs.grafana_url }}/api/annotations \
+          -H "Authorization: Bearer ${{ inputs.grafana_api_key }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"text\": \"$TEXT\",
+            \"tags\": $TAGS,
+            \"time\": $(($(date +%s) * 1000))
+          }"
+
+        echo "✅ Annotation sent to Grafana"

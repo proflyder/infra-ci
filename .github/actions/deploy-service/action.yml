@@ -1,0 +1,131 @@
+name: Deploy Service (Universal)
+description: Universal deployment action for any Docker-based service
+
+inputs:
+  ssh_host:
+    description: SSH host address
+    required: true
+  ssh_user:
+    description: SSH username
+    required: true
+  ssh_key:
+    description: SSH private key
+    required: true
+  ssh_port:
+    description: SSH port
+    required: false
+    default: '22'
+  deploy_path:
+    description: Deployment path on VPS (e.g., /app/currency-bot or /opt/monitoring)
+    required: true
+  docker_image:
+    description: Docker image to deploy
+    required: true
+  env_content:
+    description: Content for .env file (multiline string)
+    required: true
+  github_token:
+    description: GitHub token for GHCR
+    required: true
+  github_actor:
+    description: GitHub actor
+    required: true
+  commit_sha:
+    description: Commit SHA
+    required: true
+  commit_message:
+    description: Commit message
+    required: true
+  wait_time:
+    description: Time to wait after starting services (seconds)
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy service
+      uses: appleboy/ssh-action@v1.0.3
+      env:
+        DEPLOY_PATH: ${{ inputs.deploy_path }}
+        DOCKER_IMAGE: ${{ inputs.docker_image }}
+        ENV_CONTENT: ${{ inputs.env_content }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_ACTOR: ${{ inputs.github_actor }}
+        COMMIT_SHA: ${{ inputs.commit_sha }}
+        COMMIT_MESSAGE: ${{ inputs.commit_message }}
+        WAIT_TIME: ${{ inputs.wait_time }}
+      with:
+        host: ${{ inputs.ssh_host }}
+        username: ${{ inputs.ssh_user }}
+        key: ${{ inputs.ssh_key }}
+        port: ${{ inputs.ssh_port }}
+        timeout: 5m
+        envs: DEPLOY_PATH,DOCKER_IMAGE,ENV_CONTENT,GITHUB_TOKEN,GITHUB_ACTOR,COMMIT_SHA,COMMIT_MESSAGE,WAIT_TIME
+        script: |
+          set -e
+
+          echo '═══════════════════════════════════════════════════════'
+          echo '📋 Deployment Info'
+          echo '═══════════════════════════════════════════════════════'
+          echo "Target image: $DOCKER_IMAGE"
+          echo "Deploy path: $DEPLOY_PATH"
+          echo "Commit: $COMMIT_SHA"
+          echo "Deploying by: $GITHUB_ACTOR"
+          echo ''
+          echo 'Previous deployment (will be used for rollback if needed):'
+          if [ -f "$DEPLOY_PATH/DEPLOYED_VERSION" ]; then
+            cat "$DEPLOY_PATH/DEPLOYED_VERSION"
+          else
+            echo '  (No previous deployment - first deployment to this server)'
+          fi
+          echo '═══════════════════════════════════════════════════════'
+          echo ''
+
+          echo '📂 Creating deployment directory...'
+          sudo mkdir -p "$DEPLOY_PATH"
+          sudo mkdir -p "$DEPLOY_PATH/config"
+
+          echo '📦 Logging in to GitHub Container Registry...'
+          echo "$GITHUB_TOKEN" | sudo docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+          echo '⬇️  Pulling Docker image...'
+          sudo docker pull "$DOCKER_IMAGE"
+
+          echo '📦 Extracting configs from image...'
+          sudo docker run --rm -v "$DEPLOY_PATH:/output" "$DOCKER_IMAGE"
+
+          echo '📝 Creating .env file...'
+          echo "$ENV_CONTENT" | sudo tee "$DEPLOY_PATH/.env" > /dev/null
+
+          echo '🔒 Setting permissions...'
+          sudo chown -R $USER:$USER "$DEPLOY_PATH"
+          sudo chmod 600 "$DEPLOY_PATH/.env"
+
+          echo '📝 Saving deployment version info...'
+          sudo tee "$DEPLOY_PATH/DEPLOYED_VERSION" > /dev/null <<EOF
+          Image: $DOCKER_IMAGE
+          Commit: $COMMIT_SHA
+          Message: $COMMIT_MESSAGE
+          Deployed: $(date -Iseconds)
+          Deployed by: $GITHUB_ACTOR
+          EOF
+
+          echo '🐳 Stopping old containers...'
+          cd "$DEPLOY_PATH"
+          sudo docker compose down 2>/dev/null || true
+
+          echo '🐳 Starting service...'
+          sudo docker compose up -d
+
+          echo "⏳ Waiting for services to start ($WAIT_TIME seconds)..."
+          sleep "$WAIT_TIME"
+
+          echo '📊 Container status after startup:'
+          sudo docker compose ps
+
+          echo ''
+          echo '✅ Deployment completed!'
+          echo ''
+          echo '📝 New deployed version:'
+          cat "$DEPLOY_PATH/DEPLOYED_VERSION"

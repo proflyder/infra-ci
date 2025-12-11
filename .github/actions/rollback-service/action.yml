@@ -1,0 +1,110 @@
+name: Rollback Service (Universal)
+description: Universal rollback action for any Docker-based service
+
+inputs:
+  ssh_host:
+    description: SSH host address
+    required: true
+  ssh_user:
+    description: SSH username
+    required: true
+  ssh_key:
+    description: SSH private key
+    required: true
+  ssh_port:
+    description: SSH port
+    required: false
+    default: '22'
+  deploy_path:
+    description: Deployment path on VPS (e.g., /app/currency-bot or /opt/monitoring)
+    required: true
+  env_content:
+    description: Content for .env file (multiline string)
+    required: true
+  github_token:
+    description: GitHub token for GHCR (optional, for pulling previous image)
+    required: false
+    default: ''
+  github_actor:
+    description: GitHub actor (optional, for pulling previous image)
+    required: false
+    default: ''
+  wait_time:
+    description: Time to wait after starting services (seconds)
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Rollback to previous version
+      uses: appleboy/ssh-action@v1.0.3
+      env:
+        DEPLOY_PATH: ${{ inputs.deploy_path }}
+        ENV_CONTENT: ${{ inputs.env_content }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_ACTOR: ${{ inputs.github_actor }}
+        WAIT_TIME: ${{ inputs.wait_time }}
+      with:
+        host: ${{ inputs.ssh_host }}
+        username: ${{ inputs.ssh_user }}
+        key: ${{ inputs.ssh_key }}
+        port: ${{ inputs.ssh_port }}
+        timeout: 5m
+        envs: DEPLOY_PATH,ENV_CONTENT,GITHUB_TOKEN,GITHUB_ACTOR,WAIT_TIME
+        script: |
+          set -e
+
+          echo '⚠️  Deployment or smoke tests failed! Rolling back...'
+          echo ''
+
+          if [ -f "$DEPLOY_PATH/DEPLOYED_VERSION.backup" ]; then
+            echo '═══════════════════════════════════════════════════════'
+            echo '📋 Rollback Info'
+            echo '═══════════════════════════════════════════════════════'
+            echo 'Rolling back to previous working version:'
+            cat "$DEPLOY_PATH/DEPLOYED_VERSION.backup"
+            echo '═══════════════════════════════════════════════════════'
+            echo ''
+
+            echo '📦 Restoring previous version info...'
+            sudo cp "$DEPLOY_PATH/DEPLOYED_VERSION.backup" "$DEPLOY_PATH/DEPLOYED_VERSION"
+
+            # Extract previous image from backup
+            PREVIOUS_IMAGE=$(grep "^Image:" "$DEPLOY_PATH/DEPLOYED_VERSION" | awk '{print $2}')
+
+            if [ -n "$PREVIOUS_IMAGE" ]; then
+              echo "⬇️  Pulling previous image: $PREVIOUS_IMAGE"
+
+              # Login to GHCR if credentials provided
+              if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_ACTOR" ]; then
+                echo "$GITHUB_TOKEN" | sudo docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+              fi
+
+              sudo docker pull "$PREVIOUS_IMAGE" || echo "⚠️  Could not pull previous image, using existing"
+
+              echo '📦 Extracting previous configs...'
+              sudo docker run --rm -v "$DEPLOY_PATH:/output" "$PREVIOUS_IMAGE" || echo "⚠️  Using existing configs"
+            fi
+
+            echo '📝 Restoring .env file...'
+            echo "$ENV_CONTENT" | sudo tee "$DEPLOY_PATH/.env" > /dev/null
+
+            echo '🐳 Restarting with previous version...'
+            cd "$DEPLOY_PATH"
+            sudo docker compose down
+            sudo docker compose up -d
+
+            echo "⏳ Waiting for services to start ($WAIT_TIME seconds)..."
+            sleep "$WAIT_TIME"
+
+            echo ''
+            echo '✅ Rollback completed!'
+            echo ''
+            echo '📝 Restored version info:'
+            cat "$DEPLOY_PATH/DEPLOYED_VERSION"
+          else
+            echo '❌ No previous version found to rollback to!'
+            echo 'This might be the first deployment.'
+            exit 1
+          fi

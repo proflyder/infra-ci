@@ -1,0 +1,40 @@
+name: Backup Version
+description: Backup current deployment version before deploying new one
+
+inputs:
+  ssh_host:
+    description: SSH host address
+    required: true
+  ssh_user:
+    description: SSH username
+    required: true
+  ssh_key:
+    description: SSH private key
+    required: true
+  ssh_port:
+    description: SSH port
+    required: false
+    default: '22'
+  version_file:
+    description: Path to DEPLOYED_VERSION file
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Backup current version
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.ssh_host }}
+        username: ${{ inputs.ssh_user }}
+        key: ${{ inputs.ssh_key }}
+        port: ${{ inputs.ssh_port }}
+        timeout: 1m
+        script: |
+          # Сохраняем текущую версию если она существует
+          if [ -f ${{ inputs.version_file }} ]; then
+            sudo cp ${{ inputs.version_file }} ${{ inputs.version_file }}.backup
+            echo "✅ Current version backed up"
+          else
+            echo "ℹ️  No previous version to backup (first deploy)"
+          fi

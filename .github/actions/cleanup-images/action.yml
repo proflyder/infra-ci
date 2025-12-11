@@ -1,0 +1,58 @@
+name: Cleanup Old Docker Images
+description: Remove old Docker images except current and backup versions
+
+inputs:
+  ssh_host:
+    description: SSH host address
+    required: true
+  ssh_user:
+    description: SSH username
+    required: true
+  ssh_key:
+    description: SSH private key
+    required: true
+  ssh_port:
+    description: SSH port
+    required: false
+    default: '22'
+  version_file:
+    description: Path to DEPLOYED_VERSION file
+    required: true
+  image_pattern:
+    description: Pattern to match images for cleanup (e.g., "infra-monitoring", "proflyder-tgbot")
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cleanup old images
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.ssh_host }}
+        username: ${{ inputs.ssh_user }}
+        key: ${{ inputs.ssh_key }}
+        port: ${{ inputs.ssh_port }}
+        timeout: 2m
+        script: |
+          echo '🧹 Cleaning up old Docker images...'
+
+          # Удаляем dangling образы (без тегов)
+          sudo docker image prune -f
+
+          # Удаляем старые образы (кроме текущего и backup)
+          CURRENT_IMAGE=$(grep "^Image:" ${{ inputs.version_file }} | awk '{print $2}')
+          BACKUP_IMAGE=$(grep "^Image:" ${{ inputs.version_file }}.backup 2>/dev/null | awk '{print $2}' || echo "none")
+
+          echo "Current image: $CURRENT_IMAGE"
+          echo "Backup image: $BACKUP_IMAGE"
+          echo ''
+
+          # Получаем все образы по паттерну
+          OLD_IMAGES=$(sudo docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ inputs.image_pattern }}" | grep -v "$CURRENT_IMAGE" | grep -v "$BACKUP_IMAGE" | grep -v "latest" || true)
+
+          for image in $OLD_IMAGES; do
+            echo "Removing old image: $image"
+            sudo docker rmi "$image" 2>/dev/null || true
+          done
+
+          echo '✅ Cleanup completed!'
